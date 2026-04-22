@@ -54,7 +54,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await status_show.fn(ctx)
+        result = await status_show(ctx)
 
         assert result["success"] is True
         assert "ckan_version" in result["result"]
@@ -76,7 +76,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await license_list.fn(ctx)
+        result = await license_list(ctx)
 
         assert result["success"] is True
         assert len(result["result"]) > 0
@@ -95,7 +95,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await package_list.fn(ctx)
+        result = await package_list(ctx)
 
         assert result["success"] is True
         assert len(result["result"]) == 3
@@ -120,7 +120,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await package_search.fn(ctx, q="test", rows=10)
+        result = await package_search(ctx, q="test", rows=10)
 
         assert result["success"] is True
         assert result["result"]["count"] == 2
@@ -147,7 +147,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await package_show.fn(ctx, id="test-dataset")
+        result = await package_show(ctx, id="test-dataset")
 
         assert result["success"] is True
         assert result["result"]["name"] == "test-dataset"
@@ -167,7 +167,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await organization_list.fn(ctx)
+        result = await organization_list(ctx)
 
         assert result["success"] is True
         assert len(result["result"]) == 2
@@ -191,7 +191,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await organization_show.fn(ctx, id="test-org")
+        result = await organization_show(ctx, id="test-org")
 
         assert result["success"] is True
         assert result["result"]["name"] == "test-org"
@@ -215,7 +215,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await resource_search.fn(ctx, query="name:test", limit=10)
+        result = await resource_search(ctx, query="name:test", limit=10)
 
         assert result["success"] is True
         assert result["result"]["count"] == 1
@@ -240,7 +240,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await datastore_search.fn(ctx, resource_id="test-resource", limit=2)
+        result = await datastore_search(ctx, resource_id="test-resource", limit=2)
 
         assert result["success"] is True
         assert len(result["result"]["records"]) == 2
@@ -281,7 +281,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await fetch_data.fn(ctx, dataset_name="test-dataset", limit=10)
+        result = await fetch_data(ctx, dataset_name="test-dataset", limit=10)
 
         assert "records" in result
         assert len(result["records"]) == 2
@@ -304,7 +304,7 @@ class TestTools:
         )
 
         ctx = MockContext()
-        result = await fetch_data.fn(ctx, dataset_name="test-dataset")
+        result = await fetch_data(ctx, dataset_name="test-dataset")
 
         assert "error" in result
         assert "No resources found" in result["error"]
@@ -324,6 +324,6 @@ class TestTools:
 
         ctx = MockContext()
         with pytest.raises(Exception):
-            await package_list.fn(ctx)
+            await package_list(ctx)
 
         assert len(ctx.error_messages) > 0

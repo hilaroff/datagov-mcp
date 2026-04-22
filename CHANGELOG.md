@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-01-15
+
+### Added
+
+#### MCP Apps with prefab-ui
+- **Interactive UI rendering**: Visualization tools now return native prefab-ui components
+  that render directly in MCP-compatible clients (Apps tab in MCP Inspector)
+- **`datagov_mcp/apps.py`**: Three FastMCPApp providers (DataProfile, Charts, Maps)
+  registered via `mcp.add_provider()`
+- **prefab-ui components**: DataTable, Metric, BarChart, LineChart, ScatterChart,
+  Histogram, Embed — all rendered via MCP Apps protocol
+- **XSS protection**: Map popup values are HTML-escaped to prevent injection from public data
+- **Numeric coercion**: CKAN string values (e.g., `"25"`) automatically converted for charts
+- **Line chart sorting**: X-axis values sorted for correct trend rendering
+- **CartoDB tiles**: Maps use CARTO basemaps for reliable headless rendering
+- **New test cases**: Scatter chart, string coercion, XSS escaping (39 tests total)
+- **E2E screenshots**: 6 demo screenshots from live Israeli government datasets
+
+### Changed
+- **Dependencies**: Added `prefab-ui>=0.19.0`, updated to FastMCP 3.2+
+- **`visualization.py`**: Complete rewrite — returns prefab Components instead of dicts
+- **`server.py`**: Registers 3 app providers for MCP Apps support
+- **Documentation**: Comprehensive README rewrite with real-world examples and screenshots
+
+### Removed
+- Old Vega-Lite chart generation (replaced by prefab-ui components)
+- `VISUALIZATION_DEMO.md` (superseded by README screenshots)
+
 ## [0.3.0] - 2024-02-14
 
 ### Added
@@ -74,5 +102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `datastore_search`
   - `fetch_data`
 
+[0.4.0]: https://github.com/aviveldan/datagov-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aviveldan/datagov-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aviveldan/datagov-mcp/releases/tag/v0.2.0
