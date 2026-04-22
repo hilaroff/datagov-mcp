@@ -7,8 +7,13 @@ from datagov_mcp.api import CKANAPIError, ckan_api_call
 # Create an MCP server
 mcp = FastMCP("DataGovIL")
 
-# Import visualization tools to register them
+# Import visualization tools (registers @app.ui() functions) and add app providers
 from datagov_mcp import visualization  # noqa: E402, F401
+from datagov_mcp.apps import charts_app, maps_app, profile_app  # noqa: E402
+
+mcp.add_provider(profile_app)
+mcp.add_provider(charts_app)
+mcp.add_provider(maps_app)
 
 
 @mcp.tool()

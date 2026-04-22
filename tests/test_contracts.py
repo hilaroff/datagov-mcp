@@ -28,26 +28,29 @@ class TestToolContracts:
             "resource_search",
             "datastore_search",
             "fetch_data",
+            "dataset_profile",
+            "chart_generator",
+            "map_generator",
         ]
 
-        tools = await mcp.get_tools()
-        tool_names = list(tools.keys())
+        tools = await mcp.list_tools()
+        tool_names = [t.name for t in tools]
         for tool_name in expected_tools:
             assert tool_name in tool_names, f"Tool {tool_name} not found"
 
     @pytest.mark.asyncio
     async def test_status_show_signature(self):
         """Verify status_show tool signature."""
-        tools = await mcp.get_tools()
-        tool = tools["status_show"]
+        tools = await mcp.list_tools()
+        tool = next((t for t in tools if t.name == "status_show"), None)
         assert tool is not None
         assert "Get the CKAN version" in tool.description
 
     @pytest.mark.asyncio
     async def test_package_search_signature(self):
         """Verify package_search tool has expected parameters."""
-        tools = await mcp.get_tools()
-        tool = tools["package_search"]
+        tools = await mcp.list_tools()
+        tool = next((t for t in tools if t.name == "package_search"), None)
         assert tool is not None
 
         # Check parameter names exist in the schema
@@ -61,8 +64,8 @@ class TestToolContracts:
     @pytest.mark.asyncio
     async def test_package_show_signature(self):
         """Verify package_show requires 'id' parameter."""
-        tools = await mcp.get_tools()
-        tool = tools["package_show"]
+        tools = await mcp.list_tools()
+        tool = next((t for t in tools if t.name == "package_show"), None)
         assert tool is not None
 
         schema = tool.parameters
@@ -72,8 +75,8 @@ class TestToolContracts:
     @pytest.mark.asyncio
     async def test_datastore_search_signature(self):
         """Verify datastore_search tool has expected parameters."""
-        tools = await mcp.get_tools()
-        tool = tools["datastore_search"]
+        tools = await mcp.list_tools()
+        tool = next((t for t in tools if t.name == "datastore_search"), None)
         assert tool is not None
 
         schema = tool.parameters
@@ -87,10 +90,36 @@ class TestToolContracts:
     @pytest.mark.asyncio
     async def test_fetch_data_signature(self):
         """Verify fetch_data tool signature."""
-        tools = await mcp.get_tools()
-        tool = tools["fetch_data"]
+        tools = await mcp.list_tools()
+        tool = next((t for t in tools if t.name == "fetch_data"), None)
         assert tool is not None
 
         schema = tool.parameters
         required = schema.get("required", [])
         assert "dataset_name" in required
+
+    @pytest.mark.asyncio
+    async def test_visualization_tools_have_app_metadata(self):
+        """Verify visualization tools are registered as MCP Apps with proper UI metadata."""
+        tools = await mcp.list_tools()
+        app_tool_names = ["dataset_profile", "chart_generator", "map_generator"]
+
+        for name in app_tool_names:
+            tool = next((t for t in tools if t.name == name), None)
+            assert tool is not None, f"Tool {name} not found"
+            assert tool.meta is not None, f"Tool {name} should have meta"
+            ui_meta = tool.meta.get("ui")
+            assert ui_meta is not None, f"Tool {name} should have ui metadata"
+            assert isinstance(ui_meta, dict), f"Tool {name} ui metadata should be a dict"
+            assert "resourceUri" in ui_meta, f"Tool {name} should have resourceUri in ui metadata"
+
+    @pytest.mark.asyncio
+    async def test_non_viz_tools_are_not_apps(self):
+        """Verify non-visualization tools are NOT marked as apps."""
+        tools = await mcp.list_tools()
+        non_app_tools = ["status_show", "package_list", "package_search", "fetch_data"]
+
+        for name in non_app_tools:
+            tool = next((t for t in tools if t.name == name), None)
+            assert tool is not None, f"Tool {name} not found"
+            assert not tool.meta or not tool.meta.get("ui"), f"Tool {name} should not be an app"

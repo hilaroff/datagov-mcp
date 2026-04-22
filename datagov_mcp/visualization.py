@@ -1,12 +1,29 @@
-"""Visualization and data profiling tools for CKAN datasets."""
+"""Visualization and data profiling tools for CKAN datasets.
 
+Uses prefab-ui components to render interactive UI via MCP Apps.
+"""
+
+import html as html_lib
 import json
+from collections import Counter
 from typing import Any
 
 from fastmcp import Context
+from prefab_ui.components import (
+    H2,
+    Column,
+    DataTable,
+    DataTableColumn,
+    Embed,
+    Metric,
+    Row,
+)
+from prefab_ui.components.base import Component
+from prefab_ui.components.charts import BarChart, ChartSeries, LineChart, ScatterChart
+from prefab_ui.components.histogram import Histogram
 
 from datagov_mcp.api import CKANAPIError, ckan_api_call
-from datagov_mcp.server import mcp
+from datagov_mcp.apps import charts_app, maps_app, profile_app
 
 
 def infer_field_type(values: list[Any]) -> str:
@@ -14,23 +31,19 @@ def infer_field_type(values: list[Any]) -> str:
     if not values:
         return "unknown"
 
-    # Remove None values
     non_null = [v for v in values if v is not None]
     if not non_null:
         return "null"
 
-    # Check if numeric
     try:
         numeric_values = [float(v) for v in non_null if v != ""]
-        if len(numeric_values) > len(non_null) * 0.8:  # 80% numeric
-            # Check if integer
+        if len(numeric_values) > len(non_null) * 0.8:
             if all(v == int(v) for v in numeric_values):
                 return "integer"
             return "number"
     except (ValueError, TypeError):
         pass
 
-    # Check for lat/lon patterns
     sample_str = str(non_null[0]).lower()
     if any(
         keyword in sample_str for keyword in ["lat", "latitude", "lng", "lon", "longitude", "coord"]
@@ -42,7 +55,10 @@ def infer_field_type(values: list[Any]) -> str:
 
 def calculate_stats(values: list[Any], field_type: str) -> dict[str, Any]:
     """Calculate statistics for a field based on its type."""
-    stats = {"count": len(values), "null_count": sum(1 for v in values if v is None)}
+    stats: dict[str, Any] = {
+        "count": len(values),
+        "null_count": sum(1 for v in values if v is None),
+    }
 
     non_null = [v for v in values if v is not None]
     if not non_null:
@@ -62,9 +78,6 @@ def calculate_stats(values: list[Any], field_type: str) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
     elif field_type == "string":
-        # Top values for categorical
-        from collections import Counter
-
         counter = Counter(str(v) for v in non_null)
         stats["unique_count"] = len(counter)
         stats["top_values"] = dict(counter.most_common(5))
@@ -72,8 +85,31 @@ def calculate_stats(values: list[Any], field_type: str) -> dict[str, Any]:
     return stats
 
 
-@mcp.tool()
-async def dataset_profile(ctx: Context, resource_id: str, sample_size: int = 100) -> dict:
+def _coerce_numeric(values: list[Any]) -> list[float]:
+    """Coerce values to floats, skipping non-numeric entries."""
+    result = []
+    for v in values:
+        try:
+            result.append(float(v))
+        except (ValueError, TypeError):
+            continue
+    return result
+
+
+def _coerce_record_field(records: list[dict], field: str) -> list[dict]:
+    """Coerce a field to float in-place across records, dropping invalid rows."""
+    clean = []
+    for r in records:
+        try:
+            r[field] = float(r[field])
+            clean.append(r)
+        except (ValueError, TypeError, KeyError):
+            continue
+    return clean
+
+
+@profile_app.ui()
+async def dataset_profile(ctx: Context, resource_id: str, sample_size: int = 100) -> Component:
     """
     Profile a dataset resource to understand its structure and data quality.
 
@@ -83,63 +119,84 @@ async def dataset_profile(ctx: Context, resource_id: str, sample_size: int = 100
     Args:
         resource_id: ID of the resource to profile
         sample_size: Number of records to sample (default: 100)
-
-    Returns:
-        Profile report with schema, statistics, and data quality metrics
     """
     await ctx.info(f"Profiling resource: {resource_id}")
 
     try:
-        # Fetch sample data
         result = await ckan_api_call(
             "datastore_search",
-            params={
-                "resource_id": resource_id,
-                "limit": sample_size,
-            },
+            params={"resource_id": resource_id, "limit": sample_size},
         )
 
         records = result.get("result", {}).get("records", [])
         fields = result.get("result", {}).get("fields", [])
 
         if not records:
-            return {"error": "No records found in resource"}
+            return Column(children=[H2("No records found in resource")])
 
-        # Analyze each field
         field_profiles = []
         for field_info in fields:
             field_name = field_info.get("id") or field_info.get("name", "")
-            if field_name == "_id":  # Skip internal ID
+            if field_name == "_id":
                 continue
 
             values = [record.get(field_name) for record in records]
             field_type = infer_field_type(values)
             stats = calculate_stats(values, field_type)
+            missingness = stats["null_count"] / stats["count"] if stats["count"] > 0 else 0
 
-            field_profiles.append(
-                {
-                    "name": field_name,
-                    "type": field_type,
-                    "stats": stats,
-                    "missingness": stats["null_count"] / stats["count"]
-                    if stats["count"] > 0
-                    else 0,
-                }
+            row: dict[str, Any] = {
+                "field": field_name,
+                "type": field_type,
+                "count": stats["count"],
+                "nulls": stats["null_count"],
+                "missingness": f"{missingness:.1%}",
+            }
+            if "min" in stats:
+                row["min"] = stats["min"]
+                row["max"] = stats["max"]
+                row["mean"] = round(stats["mean"], 2)
+            if "unique_count" in stats:
+                row["unique"] = stats["unique_count"]
+
+            field_profiles.append(row)
+
+        metrics = Row(
+            children=[
+                Metric(label="Resource", value=resource_id[:16] + "..."),
+                Metric(label="Sample Size", value=str(len(records))),
+                Metric(label="Fields", value=str(len(field_profiles))),
+            ]
+        )
+
+        columns = [
+            DataTableColumn(key="field", header="Field"),
+            DataTableColumn(key="type", header="Type"),
+            DataTableColumn(key="count", header="Count"),
+            DataTableColumn(key="nulls", header="Nulls"),
+            DataTableColumn(key="missingness", header="Missing %"),
+        ]
+        if any("min" in fp for fp in field_profiles):
+            columns.extend(
+                [
+                    DataTableColumn(key="min", header="Min"),
+                    DataTableColumn(key="max", header="Max"),
+                    DataTableColumn(key="mean", header="Mean"),
+                ]
             )
+        if any("unique" in fp for fp in field_profiles):
+            columns.append(DataTableColumn(key="unique", header="Unique"))
 
-        return {
-            "resource_id": resource_id,
-            "sample_size": len(records),
-            "total_fields": len(field_profiles),
-            "fields": field_profiles,
-        }
+        table = DataTable(columns=columns, rows=field_profiles, search=True)
+
+        return Column(children=[H2("Dataset Profile"), metrics, table])
 
     except CKANAPIError as e:
         await ctx.error(f"Failed to profile dataset: {e.message}")
-        return {"error": str(e.message)}
+        return Column(children=[H2(f"Error: {e.message}")])
 
 
-@mcp.tool()
+@charts_app.ui()
 async def chart_generator(
     ctx: Context,
     resource_id: str,
@@ -148,12 +205,12 @@ async def chart_generator(
     y_field: str = "",
     title: str = "",
     limit: int = 100,
-) -> dict:
+) -> Component:
     """
-    Generate a Vega-Lite chart specification for dataset visualization.
+    Generate an interactive chart from a dataset resource.
 
-    Creates interactive chart specifications that can be rendered in compatible viewers.
-    Supports common chart types: histogram, bar, line, and scatter plots.
+    Supports histogram, bar, line, and scatter chart types using native
+    prefab-ui components rendered via MCP Apps.
 
     Args:
         resource_id: ID of the resource to visualize
@@ -162,165 +219,144 @@ async def chart_generator(
         y_field: Field name for Y-axis (not needed for histogram)
         title: Chart title (optional)
         limit: Maximum number of records to visualize (default: 100)
-
-    Returns:
-        Vega-Lite specification (JSON) and optional HTML rendering
     """
     await ctx.info(f"Generating {chart_type} chart for resource: {resource_id}")
 
     try:
-        # Fetch data
         result = await ckan_api_call(
             "datastore_search",
-            params={
-                "resource_id": resource_id,
-                "limit": limit,
-            },
+            params={"resource_id": resource_id, "limit": limit},
         )
 
         records = result.get("result", {}).get("records", [])
 
         if not records:
-            return {"error": "No records found in resource"}
+            return Column(children=[H2("No records found in resource")])
 
-        # Base Vega-Lite specification
-        spec = {
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "title": title or f"{chart_type.capitalize()} Chart",
-            "data": {"values": records},
-            "width": 600,
-            "height": 400,
-        }
+        chart_title = title or f"{chart_type.capitalize()} Chart"
+        heading = H2(chart_title)
 
-        # Chart-specific configurations
         if chart_type == "histogram":
-            spec["mark"] = "bar"
-            spec["encoding"] = {
-                "x": {"field": x_field, "bin": True, "title": x_field},
-                "y": {"aggregate": "count", "title": "Count"},
-            }
+            values = _coerce_numeric([r.get(x_field) for r in records])
+            if not values:
+                return Column(children=[H2(f"No numeric values found in field '{x_field}'")])
+            chart = Histogram(values=values, x_axis=x_field, height=400)
+
         elif chart_type == "bar":
-            spec["mark"] = "bar"
-            spec["encoding"] = {
-                "x": {"field": x_field, "title": x_field},
-                "y": {"field": y_field, "type": "quantitative", "title": y_field},
-            }
+            clean = _coerce_record_field([dict(r) for r in records], y_field)
+            if not clean:
+                return Column(children=[H2("No valid data for bar chart")])
+            chart = BarChart(
+                data=clean,
+                series=[ChartSeries(data_key=y_field, label=y_field)],
+                x_axis=x_field,
+                height=400,
+            )
+
         elif chart_type == "line":
-            spec["mark"] = {"type": "line", "point": True}
-            spec["encoding"] = {
-                "x": {"field": x_field, "title": x_field},
-                "y": {"field": y_field, "type": "quantitative", "title": y_field},
-            }
+            clean = _coerce_record_field([dict(r) for r in records], y_field)
+            if not clean:
+                return Column(children=[H2("No valid data for line chart")])
+            clean.sort(key=lambda r: r.get(x_field, 0))
+            chart = LineChart(
+                data=clean,
+                series=[ChartSeries(data_key=y_field, label=y_field)],
+                x_axis=x_field,
+                height=400,
+            )
+
         elif chart_type == "scatter":
-            spec["mark"] = "point"
-            spec["encoding"] = {
-                "x": {"field": x_field, "type": "quantitative", "title": x_field},
-                "y": {"field": y_field, "type": "quantitative", "title": y_field},
-            }
+            clean = _coerce_record_field([dict(r) for r in records], y_field)
+            clean = _coerce_record_field(clean, x_field)
+            if not clean:
+                return Column(children=[H2("No valid data for scatter chart")])
+            chart = ScatterChart(
+                data=clean,
+                series=[ChartSeries(data_key=y_field, label=y_field)],
+                x_axis=x_field,
+                y_axis=y_field,
+                height=400,
+            )
+
         else:
-            return {"error": f"Unsupported chart type: {chart_type}"}
+            return Column(children=[H2(f"Unsupported chart type: {chart_type}")])
 
-        # Generate HTML rendering
-        html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-</head>
-<body>
-  <div id="vis"></div>
-  <script type="text/javascript">
-    var spec = {json.dumps(spec)};
-    vegaEmbed('#vis', spec);
-  </script>
-</body>
-</html>
-"""
-
-        return {"vega_lite_spec": spec, "html": html}
+        return Column(children=[heading, chart])
 
     except CKANAPIError as e:
         await ctx.error(f"Failed to generate chart: {e.message}")
-        return {"error": str(e.message)}
+        return Column(children=[H2(f"Error: {e.message}")])
 
 
-@mcp.tool()
+@maps_app.ui()
 async def map_generator(
     ctx: Context, resource_id: str, lat_field: str, lon_field: str, limit: int = 500
-) -> dict:
+) -> Component:
     """
     Generate an interactive map from geographic data.
 
-    Creates a GeoJSON representation and an HTML map visualization
-    for datasets with latitude/longitude coordinates.
+    Creates a Leaflet map visualization for datasets with latitude/longitude
+    coordinates, rendered via MCP Apps.
 
     Args:
         resource_id: ID of the resource to map
         lat_field: Field name containing latitude values
         lon_field: Field name containing longitude values
         limit: Maximum number of points to map (default: 500)
-
-    Returns:
-        GeoJSON feature collection and HTML map with Leaflet
     """
     await ctx.info(f"Generating map for resource: {resource_id}")
 
     try:
-        # Fetch data
         result = await ckan_api_call(
             "datastore_search",
-            params={
-                "resource_id": resource_id,
-                "limit": limit,
-            },
+            params={"resource_id": resource_id, "limit": limit},
         )
 
         records = result.get("result", {}).get("records", [])
 
         if not records:
-            return {"error": "No records found in resource"}
+            return Column(children=[H2("No records found in resource")])
 
-        # Convert to GeoJSON
+        # Build GeoJSON with escaped popup content
         features = []
         for record in records:
             try:
                 lat = float(record.get(lat_field, 0))
                 lon = float(record.get(lon_field, 0))
 
-                if lat and lon:  # Skip invalid coordinates
+                if lat and lon:
+                    props = {
+                        html_lib.escape(str(k)): html_lib.escape(str(v))
+                        for k, v in record.items()
+                        if k not in [lat_field, lon_field]
+                    }
                     feature = {
                         "type": "Feature",
                         "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                        "properties": {
-                            k: v for k, v in record.items() if k not in [lat_field, lon_field]
-                        },
+                        "properties": props,
                     }
                     features.append(feature)
             except (ValueError, TypeError):
                 continue
 
         if not features:
-            return {"error": "No valid geographic coordinates found"}
+            return Column(children=[H2("No valid geographic coordinates found")])
 
         geojson = {"type": "FeatureCollection", "features": features}
 
-        # Calculate bounds for map centering
         lats = [f["geometry"]["coordinates"][1] for f in features]
         lons = [f["geometry"]["coordinates"][0] for f in features]
         center_lat = sum(lats) / len(lats)
         center_lon = sum(lons) / len(lons)
 
-        # Generate HTML map
-        html = f"""
-<!DOCTYPE html>
+        map_html = f"""<!DOCTYPE html>
 <html>
 <head>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    #map {{ height: 600px; width: 100%; }}
+    body {{ margin: 0; padding: 0; }}
+    #map {{ height: 100vh; width: 100%; }}
   </style>
 </head>
 <body>
@@ -328,15 +364,15 @@ async def map_generator(
   <script>
     var map = L.map('map').setView([{center_lat}, {center_lon}], 10);
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-      attribution: '© OpenStreetMap contributors'
+      attribution: '&copy; OpenStreetMap contributors'
     }}).addTo(map);
-    
+
     var geojson = {json.dumps(geojson)};
     L.geoJSON(geojson, {{
       onEachFeature: function(feature, layer) {{
         if (feature.properties) {{
           var popup = Object.entries(feature.properties)
-            .map(([k,v]) => `<b>${{k}}</b>: ${{v}}`)
+            .map(function(e) {{ return '<b>' + e[0] + '</b>: ' + e[1]; }})
             .join('<br>');
           layer.bindPopup(popup);
         }}
@@ -344,16 +380,10 @@ async def map_generator(
     }}).addTo(map);
   </script>
 </body>
-</html>
-"""
+</html>"""
 
-        return {
-            "geojson": geojson,
-            "html": html,
-            "point_count": len(features),
-            "center": {"lat": center_lat, "lon": center_lon},
-        }
+        return Embed(html=map_html, height="600px")
 
     except CKANAPIError as e:
         await ctx.error(f"Failed to generate map: {e.message}")
-        return {"error": str(e.message)}
+        return Column(children=[H2(f"Error: {e.message}")])
