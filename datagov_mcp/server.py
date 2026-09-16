@@ -3,6 +3,7 @@
 from fastmcp import Context, FastMCP
 
 from datagov_mcp.api import CKANAPIError, ckan_api_call
+from datagov_mcp.geo import enrich_record_with_coordinates
 
 # Create an MCP server
 mcp = FastMCP("DataGovIL")
@@ -277,3 +278,113 @@ async def fetch_data(
     except CKANAPIError as e:
         await ctx.error(f"Failed to fetch data: {e.message}")
         return {"error": str(e.message)}
+
+
+@mcp.tool()
+async def find_and_query_dataset(
+    ctx: Context,
+    topic: str,
+    filter_text: str = "",
+    limit: int = 50,
+) -> dict:
+    """
+    Search data.gov.il by topic and query its data table in one call — no resource_id needed.
+
+    Use this as the DEFAULT tool whenever the user asks a natural-language question about
+    a subject (e.g. "public transit stations", "תחנות תחבורה ציבורית", "air quality
+    monitoring") without already knowing a specific resource_id. It searches CKAN packages
+    by topic, re-ranks candidates by title-word overlap with the topic (CKAN's own
+    relevance ranking is unreliable for compound Hebrew phrases — the exact phrase
+    "תחנות תחבורה ציבורית" ranks its own matching dataset 10th out of 42 by default),
+    picks the best-matching result that has a queryable datastore resource, then runs a
+    full-text query against it (optionally filtered, e.g. by city name).
+
+    Every returned record is also enriched with clean "latitude"/"longitude" WGS84 fields
+    when a recognizable coordinate pair is found (lon/lat, or generic X/Y, ITM_X/ITM_Y,
+    X-utm/Y-utm, etc.) — converting from Israeli ITM (EPSG:2039) meters if needed — so
+    results can be plotted directly on a map without any manual coordinate handling.
+
+    Args:
+        topic: What kind of data to find, in Hebrew or English, e.g. "תחנות תחבורה ציבורית".
+        filter_text: Optional full-text filter within the resource's records, e.g. a city
+            name like "אבו גוש". Leave empty to return unfiltered records.
+        limit: Maximum number of records to return (default: 50).
+
+    Returns:
+        Dict with the matched dataset/resource info and the enriched records, or an
+        "error"/"candidate_datasets" payload if no queryable resource could be found.
+    """
+    await ctx.info(f"Searching datasets for topic: {topic}")
+    try:
+        search_result = await ckan_api_call("package_search", params={"q": topic, "rows": 20})
+        packages = search_result.get("result", {}).get("results", [])
+
+        if not packages:
+            return {"error": f"No datasets found for topic '{topic}'"}
+
+        # CKAN's relevance ranking is unreliable for multi-word Hebrew phrases, so
+        # re-rank candidates locally by how many topic words appear in the title
+        # (stable sort keeps CKAN's own order as the tiebreak).
+        topic_words = [w for w in topic.strip().split() if w]
+
+        def _title_match_score(pkg: dict) -> int:
+            title = pkg.get("title") or ""
+            return sum(1 for w in topic_words if w in title)
+
+        packages = sorted(packages, key=_title_match_score, reverse=True)
+
+        chosen_resource = None
+        chosen_package = None
+        for pkg in packages:
+            for res in pkg.get("resources", []):
+                if res.get("datastore_active"):
+                    chosen_resource = res
+                    chosen_package = pkg
+                    break
+            if chosen_resource:
+                break
+
+        if not chosen_resource:
+            return {
+                "error": (
+                    f"Found {len(packages)} dataset(s) for '{topic}' but none have a "
+                    "queryable data table (datastore). Try package_show on one of these "
+                    "to inspect its resources manually."
+                ),
+                "candidate_datasets": [
+                    {"id": pkg.get("name"), "title": pkg.get("title")} for pkg in packages
+                ],
+            }
+
+        resource_id = chosen_resource["id"]
+        await ctx.info(
+            f"Using dataset '{chosen_package.get('title')}', "
+            f"resource '{chosen_resource.get('name')}' ({resource_id})"
+        )
+
+        search_params: dict[str, object] = {"resource_id": resource_id, "limit": limit}
+        if filter_text:
+            search_params["q"] = filter_text
+
+        datastore_result = await ckan_api_call("datastore_search", params=search_params)
+        result = datastore_result.get("result", {})
+        records = result.get("records", [])
+        fields = result.get("fields", [])
+
+        enriched_records = [enrich_record_with_coordinates(dict(r)) for r in records]
+        geolocated_count = sum(1 for r in enriched_records if "latitude" in r)
+
+        return {
+            "dataset_title": chosen_package.get("title"),
+            "resource_id": resource_id,
+            "resource_name": chosen_resource.get("name"),
+            "fields": [f.get("id") for f in fields if f.get("id") != "_id"],
+            "total_matching_records": result.get("total"),
+            "records_returned": len(enriched_records),
+            "records_with_coordinates": geolocated_count,
+            "records": enriched_records,
+        }
+
+    except CKANAPIError as e:
+        await ctx.error(f"Failed to search/query dataset: {e.message}")
+        return {"error": e.message}
